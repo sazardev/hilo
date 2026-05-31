@@ -179,7 +179,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.configCursor = max
 				}
 				if m.configSection == 1 {
-					const visibleColors = 10
 					if m.configCursor < m.colorScroll {
 						m.colorScroll = m.configCursor
 					}
