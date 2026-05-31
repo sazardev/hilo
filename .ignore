@@ -1,0 +1,60 @@
+# === Go Build Artifacts ===
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/hilo
+/hilo-*
+
+# === Go Test & Coverage ===
+*.test
+*.out
+*.prof
+coverage.html
+cover.out
+coverage.txt
+*.coverprofile
+
+# === Dependencies ===
+vendor/
+
+# === AI Agentic ===
+.agents/
+skills-lock.json
+
+# === IDEs & Editors ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+.vscode-test/
+*.code-workspace
+.cursor/
+
+# === OS Files ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# === Logs ===
+*.log
+logs/
+
+# === Environment / Secrets ===
+.env
+.env.*
+!.env.example
+*.pem
+*.key
