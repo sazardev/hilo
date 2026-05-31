@@ -7,8 +7,9 @@ import (
 )
 
 type appConfig struct {
-	theme int `json:"theme"`
-	color int `json:"color"`
+	Theme int `json:"theme"`
+	Color int `json:"color"`
+	Mode  int `json:"mode"`
 }
 
 func getConfigPath() string {
@@ -22,19 +23,22 @@ func getConfigPath() string {
 func loadConfig() appConfig {
 	data, err := os.ReadFile(getConfigPath())
 	if err != nil {
-		return appConfig{theme: 0, color: 0}
+		return appConfig{Theme: 0, Color: 0, Mode: 0}
 	}
 
 	var cfg appConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return appConfig{theme: 0, color: 0}
+		return appConfig{Theme: 0, Color: 0, Mode: 0}
 	}
 
-	if cfg.theme < 0 || cfg.theme >= len(themes) {
-		cfg.theme = 0
+	if cfg.Theme < 0 || cfg.Theme >= len(themes) {
+		cfg.Theme = 0
 	}
-	if cfg.color < 0 || cfg.color >= len(colorSchemes) {
-		cfg.color = 0
+	if cfg.Color < 0 || cfg.Color >= len(colorSchemes) {
+		cfg.Color = 0
+	}
+	if cfg.Mode < 0 || cfg.Mode > 1 {
+		cfg.Mode = 0
 	}
 
 	return cfg
@@ -42,8 +46,16 @@ func loadConfig() appConfig {
 
 func saveConfig(cfg appConfig) {
 	path := getConfigPath()
-	os.MkdirAll(filepath.Dir(path), 0o755)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
 
 	data, _ := json.MarshalIndent(cfg, "", "  ")
-	os.WriteFile(path, data, 0o644)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return
+	}
+}
+
+func deleteConfig() {
+	os.Remove(getConfigPath())
 }

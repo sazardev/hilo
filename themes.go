@@ -14,6 +14,12 @@ type theme struct {
 	warn    lipgloss.Color
 }
 
+type colorScheme struct {
+	name    string
+	primary lipgloss.Color
+	accent  lipgloss.Color
+}
+
 var themes = []theme{
 	{
 		name:    "default",
@@ -59,4 +65,15 @@ var themes = []theme{
 		accent:  lipgloss.Color(""),
 		warn:    lipgloss.Color(""),
 	},
+}
+
+var colorSchemes = []colorScheme{
+	{"blue", lipgloss.Color("#5B9BF5"), lipgloss.Color("#6EDFF7")},
+	{"purple", lipgloss.Color("#B4A7F5"), lipgloss.Color("#D4CFFF")},
+	{"green", lipgloss.Color("#5BF5A0"), lipgloss.Color("#6EFFBF")},
+	{"red", lipgloss.Color("#F55B6E"), lipgloss.Color("#FF7F8E")},
+	{"orange", lipgloss.Color("#F5A05B"), lipgloss.Color("#FFBF7F")},
+	{"pink", lipgloss.Color("#F55BB8"), lipgloss.Color("#FF7FD0")},
+	{"cyan", lipgloss.Color("#5BF5E8"), lipgloss.Color("#7FFFFF")},
+	{"yellow", lipgloss.Color("#F5E85B"), lipgloss.Color("#FFFF7F")},
 }

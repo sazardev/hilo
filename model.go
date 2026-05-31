@@ -28,7 +28,8 @@ type model struct {
 	spinner       spinner.Model
 	themeIdx      int
 	colorIdx      int
-	configSection int // 0 = theme, 1 = color
+	modeIdx       int // 0 = dark, 1 = light
+	configSection int // 0 = theme, 1 = color, 2 = mode
 	configCursor  int
 }
 
@@ -37,27 +38,73 @@ func newModel() model {
 	sp.Spinner = spinner.Dot
 
 	cfg := loadConfig()
-	t := themes[cfg.theme]
-	sp.Style = lipgloss.NewStyle().Foreground(t.accent)
-
-	return model{
+	m := model{
 		activeTab: tabHome,
-		themeIdx:  cfg.theme,
-		colorIdx:  cfg.color,
-		styles:    newStyles(t),
+		themeIdx:  cfg.Theme,
+		colorIdx:  cfg.Color,
+		modeIdx:   cfg.Mode,
 		spinner:   sp,
+	}
+	m.rebuildStyles()
+	return m
+}
+
+func (m *model) rebuildStyles() {
+	var t theme
+
+	if m.colorIdx > 0 {
+		cs := colorSchemes[m.colorIdx]
+		t = theme{
+			name:    cs.name,
+			bg:      lipgloss.Color("#0F0F23"),
+			surface: lipgloss.Color("#1E1E38"),
+			border:  lipgloss.Color("#3A3A5C"),
+			text:    lipgloss.Color("#F0F0F5"),
+			muted:   lipgloss.Color("#8888A0"),
+			primary: cs.primary,
+			accent:  cs.accent,
+			warn:    lipgloss.Color("#FFD700"),
+		}
+	} else {
+		t = themes[m.themeIdx]
+	}
+
+	if m.modeIdx == 1 {
+		t = toLight(t)
+	}
+
+	m.styles = newStyles(t)
+	m.spinner.Style = lipgloss.NewStyle().Foreground(t.accent)
+}
+
+func toLight(t theme) theme {
+	return theme{
+		name:    t.name,
+		bg:      lipgloss.Color("#F5F5FA"),
+		surface: lipgloss.Color("#E8E8F0"),
+		border:  lipgloss.Color("#C8C8D8"),
+		text:    lipgloss.Color("#1A1A2E"),
+		muted:   lipgloss.Color("#6B6B8D"),
+		primary: t.primary,
+		accent:  t.accent,
+		warn:    lipgloss.Color("#D4A017"),
 	}
 }
 
 func (m *model) setTheme(idx int) {
 	m.themeIdx = idx
-	t := themes[idx]
-	m.styles = newStyles(t)
-	m.spinner.Style = lipgloss.NewStyle().Foreground(t.accent)
+	m.colorIdx = 0
+	m.rebuildStyles()
 }
 
 func (m *model) setColor(idx int) {
 	m.colorIdx = idx
+	m.rebuildStyles()
+}
+
+func (m *model) setMode(idx int) {
+	m.modeIdx = idx
+	m.rebuildStyles()
 }
 
 func (m model) Init() tea.Cmd {
@@ -100,22 +147,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "enter":
 			if m.activeTab == tabConfig {
-				if m.configSection == 0 {
+				switch m.configSection {
+				case 0:
 					m.setTheme(m.configCursor)
-				} else {
+				case 1:
 					m.setColor(m.configCursor)
+				case 2:
+					m.setMode(m.configCursor)
+				case 3:
+					if m.configCursor == 0 {
+						deleteConfig()
+						m.themeIdx = 0
+						m.colorIdx = 0
+						m.modeIdx = 0
+						m.rebuildStyles()
+					}
 				}
-				saveConfig(appConfig{theme: m.themeIdx, color: m.colorIdx})
+				if m.configSection < 3 {
+					saveConfig(appConfig{Theme: m.themeIdx, Color: m.colorIdx, Mode: m.modeIdx})
+				}
 				return m, nil
 			}
 
 		case "up", "k":
 			if m.activeTab == tabConfig {
 				m.configCursor--
-				max := len(themes) - 1
-				if m.configSection == 1 {
-					max = len(colorSchemes) - 1
-				}
+				max := m.configMax()
 				if m.configCursor < 0 {
 					m.configCursor = max
 				}
@@ -125,10 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			if m.activeTab == tabConfig {
 				m.configCursor++
-				max := len(themes) - 1
-				if m.configSection == 1 {
-					max = len(colorSchemes) - 1
-				}
+				max := m.configMax()
 				if m.configCursor > max {
 					m.configCursor = 0
 				}
@@ -137,13 +191,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "tab":
 			if m.activeTab == tabConfig {
-				m.configSection = 1 - m.configSection
-				m.configCursor = 0
-				if m.configSection == 0 {
-					m.configCursor = m.themeIdx
-				} else {
-					m.configCursor = m.colorIdx
-				}
+				m.configSection = (m.configSection + 1) % 4
+				m.configCursor = m.configCurrent()
 				return m, nil
 			}
 			if !m.isSmall {
@@ -158,7 +207,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeTab = len(tabNames) - 1
 				}
 				m.configSection = 0
-				m.configCursor = m.themeIdx
+				m.configCursor = m.configCurrent()
 			}
 			return m, nil
 
@@ -169,7 +218,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeTab = 0
 				}
 				m.configSection = 0
-				m.configCursor = m.themeIdx
+				m.configCursor = m.configCurrent()
 			}
 			return m, nil
 		}
@@ -181,6 +230,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m model) configMax() int {
+	switch m.configSection {
+	case 0:
+		return len(themes) - 1
+	case 1:
+		return len(colorSchemes) - 1
+	case 2:
+		return 1
+	case 3:
+		return 0
+	}
+	return 0
+}
+
+func (m model) configCurrent() int {
+	switch m.configSection {
+	case 0:
+		if m.colorIdx == 0 {
+			return m.themeIdx
+		}
+		return 0
+	case 1:
+		return m.colorIdx
+	case 2:
+		return m.modeIdx
+	case 3:
+		return 0
+	}
+	return 0
 }
 
 func (m model) View() string {
@@ -255,22 +335,6 @@ func (m model) viewSidebar() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, side, page)
 }
 
-func (m model) renderTabBar() string {
-	s := m.styles
-	var tabs []string
-
-	for i, name := range tabNames {
-		if i == m.activeTab {
-			tabs = append(tabs, s.tabActive.Render(name))
-		} else {
-			tabs = append(tabs, s.tabInactive.Render(name))
-		}
-	}
-
-	row := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	return s.tabBar.Render(row)
-}
-
 func (m model) renderTabsInline() string {
 	s := m.styles
 	var tabs []string
@@ -335,7 +399,6 @@ func (m model) viewHome() string {
 	dots := s.dot.Render("◆  ◆  ◆")
 
 	hello := s.hello.
-		Copy().
 		MarginTop(1).
 		MarginBottom(1).
 		Render("hello world")
@@ -382,19 +445,24 @@ func (m model) viewConfig() string {
 	sep := s.separator.Render(strings.Repeat("─", min(28, m.width-14)))
 
 	// Section tabs
-	secTheme := s.muted.Render("theme")
-	secColor := s.muted.Render("color")
-	if m.configSection == 0 {
-		secTheme = s.accent.Bold(true).Render("theme")
-	} else {
-		secColor = s.accent.Bold(true).Render("color")
+	sections := []string{"theme", "color", "mode", "user"}
+	var secParts []string
+	for i, name := range sections {
+		if i == m.configSection {
+			secParts = append(secParts, s.accent.Bold(true).Render(name))
+		} else {
+			secParts = append(secParts, s.muted.Render(name))
+		}
+		if i < len(sections)-1 {
+			secParts = append(secParts, s.muted.Render("  |  "))
+		}
 	}
-	sections := lipgloss.JoinHorizontal(lipgloss.Top, secTheme, s.muted.Render("  |  "), secColor)
+	secBar := lipgloss.JoinHorizontal(lipgloss.Top, secParts...)
 
 	var items []string
 
-	if m.configSection == 0 {
-		// Theme selection
+	switch m.configSection {
+	case 0:
 		for i, t := range themes {
 			cursor := "  "
 			if i == m.configCursor {
@@ -409,15 +477,15 @@ func (m model) viewConfig() string {
 			label := s.body.Render(t.name)
 
 			active := ""
-			if i == m.themeIdx {
+			if i == m.themeIdx && m.colorIdx == 0 {
 				active = s.muted.Render("  (active)")
 			}
 
 			row := lipgloss.JoinHorizontal(lipgloss.Center, cursor, preview, " ", label, active)
 			items = append(items, row)
 		}
-	} else {
-		// Color selection
+
+	case 1:
 		for i, cs := range colorSchemes {
 			cursor := "  "
 			if i == m.configCursor {
@@ -439,9 +507,41 @@ func (m model) viewConfig() string {
 			row := lipgloss.JoinHorizontal(lipgloss.Center, cursor, dot, " ", label, active)
 			items = append(items, row)
 		}
+
+	case 2:
+		modes := []string{"dark", "light"}
+		for i, name := range modes {
+			cursor := "  "
+			if i == m.configCursor {
+				cursor = s.themeCursor.Render("▸ ")
+			}
+
+			label := s.body.Render(name)
+
+			active := ""
+			if i == m.modeIdx {
+				active = s.muted.Render("  (active)")
+			}
+
+			row := lipgloss.JoinHorizontal(lipgloss.Center, cursor, label, active)
+			items = append(items, row)
+		}
+
+	case 3:
+		head1 := s.sectionHead.Render("config path")
+		path := s.muted.Render("  " + getConfigPath())
+		items = append(items, head1, path, "")
+
+		head2 := s.sectionHead.Render("actions")
+		cursor := "  "
+		if m.configCursor == 0 {
+			cursor = s.themeCursor.Render("▸ ")
+		}
+		resetRow := lipgloss.JoinHorizontal(lipgloss.Center, cursor, s.body.Render("reset all settings"))
+		items = append(items, head2, resetRow)
 	}
 
-	head2 := s.sectionHead.Render("controls")
+	head3 := s.sectionHead.Render("controls")
 	hint1 := s.muted.Render("  ↑/k ↓/j  navigate")
 	hint2 := s.muted.Render("  enter     apply")
 	hint3 := s.muted.Render("  tab       switch section")
@@ -449,9 +549,9 @@ func (m model) viewConfig() string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		title, sep, "",
-		sections, "",
+		secBar, "",
 		lipgloss.JoinVertical(lipgloss.Left, items...),
-		"", head2, hint1, hint2, hint3,
+		"", head3, hint1, hint2, hint3,
 	)
 }
 
@@ -501,11 +601,11 @@ func (m model) viewChangelog() string {
 		return lipgloss.JoinHorizontal(lipgloss.Top, v, "  ", d, "  ", s.body.Render(desc))
 	}
 
-	v1 := row("v1.2.0", "2026-05-31", "themes: nord, gruvbox, terminal")
-	v2 := row("", "", "  full palette switching")
-	v3 := row("", "", "  tab to switch theme/color section")
-	v4 := row("v1.1.0", "2026-05-31", "config: color accents")
-	v5 := row("", "", "  8 color schemes")
+	v1 := row("v1.3.0", "2026-05-31", "mode: dark / light")
+	v2 := row("", "", "  light mode palette")
+	v3 := row("v1.2.0", "2026-05-31", "themes: nord, gruvbox, terminal")
+	v4 := row("", "", "  full palette switching")
+	v5 := row("v1.1.0", "2026-05-31", "config: color accents")
 	v6 := row("v1.0.0", "2026-05-31", "initial release")
 	v7 := row("", "", "  home, about, help, changelog")
 	v8 := row("", "", "  responsive sidebar layout")
@@ -513,8 +613,9 @@ func (m model) viewChangelog() string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		title, sep, "",
-		v1, v2, v3, "",
-		v4, v5, "",
+		v1, v2, "",
+		v3, v4, "",
+		v5, "",
 		v6, v7, v8,
 	)
 }
