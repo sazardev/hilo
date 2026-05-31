@@ -288,10 +288,7 @@ func (m model) viewNormal() string {
 
 	tabsW := lipgloss.Width(tabsRendered)
 	hintW := lipgloss.Width(hint)
-	gap := m.width - tabsW - hintW - 4
-	if gap < 1 {
-		gap = 1
-	}
+	gap := max(m.width-tabsW-hintW-4, 1)
 	spacer := lipgloss.NewStyle().Width(gap).Render("")
 	topBar := s.tabBarOuter.Render(
 		lipgloss.JoinHorizontal(lipgloss.Center, tabsRendered, spacer, hint),
@@ -300,13 +297,10 @@ func (m model) viewNormal() string {
 	barH := lipgloss.Height(topBar)
 	content := m.renderContent()
 
-	availH := m.height - barH - 2
-	if availH < 3 {
-		availH = 3
-	}
+	availH := max(m.height-barH-2, 3)
 
 	page := s.page.
-		Width(m.width - 4).
+		Width(m.width-4).
 		Height(availH).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(content)
@@ -319,16 +313,13 @@ func (m model) viewSidebar() string {
 	side := m.renderSidePanel()
 
 	sideW := lipgloss.Width(side)
-	contentW := m.width - sideW - 4
-	if contentW < 20 {
-		contentW = 20
-	}
+	contentW := max(m.width-sideW-4, 20)
 
 	content := m.renderContent()
 
 	page := s.page.
 		Width(contentW).
-		Height(m.height - 4).
+		Height(m.height-4).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(content)
 
@@ -618,11 +609,4 @@ func (m model) viewChangelog() string {
 		v5, "",
 		v6, v7, v8,
 	)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
