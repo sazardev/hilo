@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -31,6 +32,7 @@ type model struct {
 	modeIdx       int // 0 = dark, 1 = light
 	configSection int // 0 = theme, 1 = color, 2 = mode
 	configCursor  int
+	colorScroll   int
 }
 
 func newModel() model {
@@ -176,6 +178,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.configCursor < 0 {
 					m.configCursor = max
 				}
+				if m.configSection == 1 {
+					const visibleColors = 10
+					if m.configCursor < m.colorScroll {
+						m.colorScroll = m.configCursor
+					}
+					if m.colorScroll < 0 {
+						m.colorScroll = 0
+					}
+				}
 			}
 			return m, nil
 
@@ -186,6 +197,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.configCursor > max {
 					m.configCursor = 0
 				}
+				if m.configSection == 1 {
+					const visibleColors = 10
+					if m.configCursor >= m.colorScroll+visibleColors {
+						m.colorScroll = m.configCursor - visibleColors + 1
+					}
+					total := len(colorSchemes)
+					if m.colorScroll > total-visibleColors {
+						m.colorScroll = total - visibleColors
+					}
+					if m.colorScroll < 0 {
+						m.colorScroll = 0
+					}
+				}
 			}
 			return m, nil
 
@@ -193,6 +217,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == tabConfig {
 				m.configSection = (m.configSection + 1) % 4
 				m.configCursor = m.configCurrent()
+				if m.configSection == 1 {
+					m.colorScroll = max(0, m.configCursor-9)
+				} else {
+					m.colorScroll = 0
+				}
 				return m, nil
 			}
 			if !m.isSmall {
@@ -477,7 +506,15 @@ func (m model) viewConfig() string {
 		}
 
 	case 1:
-		for i, cs := range colorSchemes {
+		const visibleColors = 10
+		total := len(colorSchemes)
+		start := m.colorScroll
+		end := start + visibleColors
+		if end > total {
+			end = total
+		}
+		for i := start; i < end; i++ {
+			cs := colorSchemes[i]
 			cursor := "  "
 			if i == m.configCursor {
 				cursor = s.configCursor.Render("▸ ")
@@ -497,6 +534,10 @@ func (m model) viewConfig() string {
 
 			row := lipgloss.JoinHorizontal(lipgloss.Center, cursor, dot, " ", label, active)
 			items = append(items, row)
+		}
+		if total > visibleColors {
+			scrollInfo := s.muted.Render(fmt.Sprintf("  %d/%d", m.configCursor+1, total))
+			items = append(items, scrollInfo)
 		}
 
 	case 2:
