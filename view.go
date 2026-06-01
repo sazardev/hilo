@@ -127,21 +127,22 @@ func (m model) contextHints() string {
 	var parts []string
 	switch m.activeTab {
 	case tabRequest:
-		if m.focusArea == focusResponse {
-			parts = []string{
-				m.hint("←→", "view"), m.hint("↑↓", "scroll"),
-				m.hint("/", "search"), m.hint("n/N", "match"), m.hint("ctrl+k", "clear"),
-			}
-		} else {
-			parts = []string{
-				m.hint("ctrl+s", "send"), m.hint("tab", "focus"),
-				m.hint("ctrl+e", "section"), m.hint("ctrl+y", "curl"), m.hint("←→", "tabs"),
-			}
+		switch m.focusArea {
+		case focusURL:
+			parts = []string{m.hint("↑↓", "method"), m.hint("ctrl+s", "send"), m.hint("tab", "next"), m.hint("h/l", "tabs")}
+		case focusActions:
+			parts = []string{m.hint("←→", "choose"), m.hint("↵", "run"), m.hint("tab", "next")}
+		case focusSubTabs:
+			parts = []string{m.hint("←→", "section"), m.hint("↵", "edit"), m.hint("tab", "next")}
+		case focusEditor:
+			parts = []string{m.hint("tab", "field"), m.hint("↵", "add row"), m.hint("ctrl+e", "section"), m.hint("esc", "back")}
+		case focusResponse:
+			parts = []string{m.hint("↑↓", "scroll"), m.hint("←→", "view"), m.hint("/", "search"), m.hint("y", "copy"), m.hint("ctrl+k", "clear")}
 		}
 	case tabCollections:
-		parts = []string{m.hint("n", "new"), m.hint("↵", "open/load"), m.hint("d", "del"), m.hint("esc", "back")}
+		parts = []string{m.hint("n", "new"), m.hint("↵", "open/load"), m.hint("d", "del"), m.hint("h/l", "tabs")}
 	case tabHistory:
-		parts = []string{m.hint("↵", "reuse"), m.hint("d", "del"), m.hint("esc", "back")}
+		parts = []string{m.hint("↵", "reuse"), m.hint("d", "del"), m.hint("h/l", "tabs")}
 	case tabEnvironments:
 		if m.envEdit != nil {
 			parts = []string{m.hint("tab", "field"), m.hint("↵", "add var"), m.hint("ctrl+s", "save"), m.hint("esc", "cancel")}
@@ -197,7 +198,11 @@ func (m model) panelBox(title, content string, w, h int, focused bool) string {
 
 	var b strings.Builder
 	if title != "" {
-		b.WriteString(s.panelLabel.Render(title))
+		if focused {
+			b.WriteString(s.accent.Render("▸ ") + s.panelLabel.Render(title))
+		} else {
+			b.WriteString(s.muted.Render("  ") + s.panelLabel.Render(title))
+		}
 		b.WriteByte('\n')
 	}
 	b.WriteString(content)
@@ -432,10 +437,12 @@ func (m model) renderResponsePanel(w, h int) string {
 func (m model) responseView(w, h int) string {
 	s := m.styles
 
+	// While a request is in flight, show the spinner even if a previous
+	// response is still on screen, so there's always clear feedback.
+	if m.sending {
+		return "\n  " + s.accent.Render(m.spinner.View()) + s.muted.Render(" sending request...")
+	}
 	if m.response == nil {
-		if m.sending {
-			return "\n  " + s.accent.Render(m.spinner.View()) + s.muted.Render(" sending request...")
-		}
 		return "\n  " + s.muted.Render("no response yet — press ") + s.footerKey.Render("ctrl+s") + s.muted.Render(" to send")
 	}
 
@@ -793,34 +800,35 @@ func (m model) viewHelp(w, h int) string {
 	cols := [][]string{
 		{
 			s.sectionHead.Render("navigation"),
-			row("  1-6", "switch tab"),
-			row("  ←/→ h/l", "prev / next tab"),
-			row("  tab", "next focus area"),
-			row("  shift+tab", "prev focus area"),
+			row("  1-6", "go to tab"),
+			row("  h / l", "prev / next tab"),
+			row("  tab", "next field / area"),
+			row("  shift+tab", "previous field"),
+			row("  ←/→", "section · mode · action"),
 			row("  ?", "toggle help"),
-			row("  q / esc", "quit"),
+			row("  q / esc", "quit / back"),
 		},
 		{
 			s.sectionHead.Render("request"),
 			row("  ctrl+s", "send request"),
+			row("  ↑/↓", "change method (URL)"),
 			row("  ctrl+e", "cycle sections"),
 			row("  ctrl+b", "cycle body type"),
 			row("  ctrl+n", "new request"),
 			row("  ctrl+d", "duplicate request"),
 			row("  ctrl+y", "copy as cURL"),
-			row("  ctrl+k", "clear response"),
 		},
 		{
 			s.sectionHead.Render("response"),
-			row("  ↑/↓", "scroll body"),
-			row("  ←/→", "switch view mode"),
-			row("  /", "search in body"),
-			row("  n / N", "next / prev match"),
+			row("  ↑/↓ · wheel", "scroll body"),
+			row("  pgup/pgdn", "scroll page"),
+			row("  g / G", "top / bottom"),
+			row("  / · n/N", "search · matches"),
+			row("  y", "copy body"),
+			row("  ctrl+k", "clear response"),
 			"",
 			s.sectionHead.Render("collections / envs"),
-			row("  n / d", "new / delete"),
-			row("  a", "activate environment"),
-			row("  enter", "open / load / edit"),
+			row("  n/d · a", "new/del · activate"),
 		},
 	}
 
