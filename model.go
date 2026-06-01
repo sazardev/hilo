@@ -84,11 +84,23 @@ const (
 
 var respModeNames = []string{"Pretty", "Raw", "Headers", "Cookies"}
 
+// overlayKind identifies a modal overlay drawn over the whole screen.
+type overlayKind int
+
+const (
+	overlayNone overlayKind = iota
+	overlayCurl
+	overlaySnippet
+)
+
 type collViewMode int
 
 const (
 	collList collViewMode = iota
 	collDetail
+	collGitLog
+	collGitDiff
+	collGitBranch
 )
 
 type keyValue struct {
@@ -133,13 +145,14 @@ type model struct {
 	editorRow int
 	editorCol int
 
-	authType  authTypeIdx
-	authKey   textinput.Model
-	authValue textinput.Model
-	authUser  textinput.Model
-	authPass  textinput.Model
-	bodyType  bodyTypeIdx
-	bodyInput textarea.Model
+	authType     authTypeIdx
+	authFieldIdx int
+	authKey      textinput.Model
+	authValue    textinput.Model
+	authUser     textinput.Model
+	authPass     textinput.Model
+	bodyType     bodyTypeIdx
+	bodyInput    textarea.Model
 
 	response       *Response
 	responseMode   respMode
@@ -161,6 +174,17 @@ type model struct {
 	collReqIdx  int
 	collMode    collViewMode
 
+	// Git versioning UI state (within the Collections tab).
+	gitLog        []GitLogEntry
+	gitLogIdx     int
+	gitDiff       string
+	gitDiffScroll int
+	gitReqPath    string // repo-relative path of the request being inspected
+	gitReqName    string
+	gitBranches   []string
+	gitBranchIdx  int
+	gitCurBranch  string
+
 	history []HistoryEntry
 	histIdx int
 
@@ -180,6 +204,13 @@ type model struct {
 
 	importMode bool
 	importBuf  string
+
+	// Overlays and import/export UI.
+	overlay       overlayKind
+	pasteArea     textarea.Model
+	snippetLang   int
+	pathInput     textinput.Model
+	collImporting bool
 
 	message     string
 	messageTime time.Time
@@ -212,6 +243,7 @@ func newModel() model {
 	authPass := textinput.New()
 	authPass.Placeholder = "Password"
 	authPass.CharLimit = 256
+	authPass.EchoMode = textinput.EchoPassword // mask secrets in the UI
 
 	bodyInput := textarea.New()
 	bodyInput.Placeholder = "Request body..."
@@ -229,6 +261,15 @@ func newModel() model {
 	searchInput.Placeholder = "search response..."
 	searchInput.CharLimit = 256
 	searchInput.Prompt = ""
+
+	pasteArea := textarea.New()
+	pasteArea.Placeholder = "paste a curl command here..."
+	pasteArea.CharLimit = 1024 * 64
+	pasteArea.ShowLineNumbers = false
+
+	pathInput := textinput.New()
+	pathInput.Placeholder = "/path/to/collection.json"
+	pathInput.CharLimit = 1024
 
 	cfg := loadConfig()
 	ct := loadCustomThemes()
@@ -266,6 +307,8 @@ func newModel() model {
 		customThemes: ct,
 		creatingName: creatingName,
 		searchInput:  searchInput,
+		pasteArea:    pasteArea,
+		pathInput:    pathInput,
 	}
 	m.loadTabData()
 	m.rebuildStyles()
@@ -333,55 +376,62 @@ func (m *model) focusCurrent() {
 				}
 			}
 		case subTabAuth:
-			switch m.authType {
-			case authBearer:
-				m.authValue.Focus()
-			case authBasic, authDigest:
-				m.authUser.Focus()
-			case authAPIKey:
-				m.authKey.Focus()
-			}
+			m.focusAuthField()
 		case subTabBody:
 			m.bodyInput.Focus()
 		}
 	}
 }
 
-// focusNextAuthField moves focus to the second field of a two-field auth type
-// (user→pass, key→value). Returns false when there's nowhere further to go, so
-// the caller can fall back to cycling the focus area.
-func (m *model) focusNextAuthField() bool {
+// authFields returns the focusable inputs for the current auth type, in tab
+// order. The four backing inputs are reused across types (for OAuth2 they map
+// to token URL, client id, client secret and scope).
+func (m *model) authFields() []*textinput.Model {
 	switch m.authType {
+	case authBearer:
+		return []*textinput.Model{&m.authValue}
 	case authBasic, authDigest:
-		if m.authUser.Focused() {
-			m.authUser.Blur()
-			m.authPass.Focus()
-			return true
-		}
+		return []*textinput.Model{&m.authUser, &m.authPass}
 	case authAPIKey:
-		if m.authKey.Focused() {
-			m.authKey.Blur()
-			m.authValue.Focus()
-			return true
-		}
+		return []*textinput.Model{&m.authKey, &m.authValue}
+	case authOAuth2:
+		return []*textinput.Model{&m.authKey, &m.authUser, &m.authPass, &m.authValue}
+	}
+	return nil
+}
+
+// focusAuthField focuses the input under authFieldIdx and blurs the others.
+func (m *model) focusAuthField() {
+	m.authKey.Blur()
+	m.authValue.Blur()
+	m.authUser.Blur()
+	m.authPass.Blur()
+
+	fields := m.authFields()
+	if m.authFieldIdx >= len(fields) {
+		m.authFieldIdx = 0
+	}
+	if m.authFieldIdx < len(fields) {
+		fields[m.authFieldIdx].Focus()
+	}
+}
+
+// focusNextAuthField advances to the next auth input, returning false when at
+// the last field so Tab can move on to the next focus region.
+func (m *model) focusNextAuthField() bool {
+	if m.authFieldIdx < len(m.authFields())-1 {
+		m.authFieldIdx++
+		m.focusAuthField()
+		return true
 	}
 	return false
 }
 
 func (m *model) focusPrevAuthField() bool {
-	switch m.authType {
-	case authBasic, authDigest:
-		if m.authPass.Focused() {
-			m.authPass.Blur()
-			m.authUser.Focus()
-			return true
-		}
-	case authAPIKey:
-		if m.authValue.Focused() {
-			m.authValue.Blur()
-			m.authKey.Focus()
-			return true
-		}
+	if m.authFieldIdx > 0 {
+		m.authFieldIdx--
+		m.focusAuthField()
+		return true
 	}
 	return false
 }
@@ -415,6 +465,14 @@ func (m model) currentRequest() Request {
 		auth = &Auth{Type: AuthAPIKey, Key: m.authKey.Value(), Value: m.authValue.Value()}
 	case authDigest:
 		auth = &Auth{Type: AuthDigest, Username: m.authUser.Value(), Password: m.authPass.Value()}
+	case authOAuth2:
+		auth = &Auth{
+			Type:         AuthOAuth2,
+			TokenURL:     m.authKey.Value(),
+			ClientID:     m.authUser.Value(),
+			ClientSecret: m.authPass.Value(),
+			Scope:        m.authValue.Value(),
+		}
 	}
 
 	var bt string
@@ -476,6 +534,7 @@ func (m *model) loadRequestIntoEditor(req Request) {
 	m.bodyType = bodyTypeFromString(req.BodyType)
 
 	m.authType = authNone
+	m.authFieldIdx = 0
 	if req.Auth != nil {
 		switch req.Auth.Type {
 		case AuthBearer:
@@ -494,6 +553,12 @@ func (m *model) loadRequestIntoEditor(req Request) {
 			m.authType = authAPIKey
 			m.authKey.SetValue(req.Auth.Key)
 			m.authValue.SetValue(req.Auth.Value)
+		case AuthOAuth2:
+			m.authType = authOAuth2
+			m.authKey.SetValue(req.Auth.TokenURL)
+			m.authUser.SetValue(req.Auth.ClientID)
+			m.authPass.SetValue(req.Auth.ClientSecret)
+			m.authValue.SetValue(req.Auth.Scope)
 		}
 	}
 
@@ -554,7 +619,10 @@ func (m model) resolveEnv() map[string]string {
 // which case single-letter keys (q, h, j, k, l, n, ...) must be typed rather
 // than treated as navigation shortcuts.
 func (m model) isTyping() bool {
-	if m.creatingMode || m.importMode || m.searchMode || m.envEdit != nil {
+	if m.creatingMode || m.importMode || m.searchMode || m.envEdit != nil || m.collImporting {
+		return true
+	}
+	if m.overlay != overlayNone {
 		return true
 	}
 	if m.activeTab == tabRequest {
@@ -628,6 +696,41 @@ func headerLines(h map[string]string) string {
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// currentRepo opens the git repository of the selected collection.
+func (m model) currentRepo() (*CollectionRepo, bool) {
+	if m.collIdx < 0 || m.collIdx >= len(m.collections) {
+		return nil, false
+	}
+	repo, err := OpenCollectionRepo(m.collections[m.collIdx].Name)
+	if err != nil {
+		return nil, false
+	}
+	return repo, true
+}
+
+// gitRepoPath returns the forward-slash, repo-relative path of a request file
+// (git always uses forward slashes regardless of OS).
+func gitRepoPath(requestID string) string {
+	return "requests/" + requestID + ".json"
+}
+
+// relativeTime renders a compact "time ago" string for commit timestamps.
+func relativeTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Format("2006-01-02")
+	}
 }
 
 func cookieLines(h map[string]string) string {
