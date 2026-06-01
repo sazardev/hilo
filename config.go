@@ -7,9 +7,11 @@ import (
 )
 
 type appConfig struct {
-	Theme int `json:"theme"`
-	Color int `json:"color"`
-	Mode  int `json:"mode"`
+	Theme        int    `json:"theme"`
+	Color        int    `json:"color"`
+	Mode         int    `json:"mode"`
+	ActiveEnv    string `json:"active_env,omitempty"`
+	HistoryLimit int    `json:"history_limit,omitempty"`
 }
 
 func getConfigPath() string {
@@ -31,7 +33,9 @@ func loadConfig() appConfig {
 		return appConfig{Theme: 0, Color: 0, Mode: 0}
 	}
 
-	if cfg.Theme < 0 || cfg.Theme >= len(themes) {
+	// Upper bound is validated in the model once custom themes are loaded,
+	// since custom themes extend the index space beyond the built-ins.
+	if cfg.Theme < 0 {
 		cfg.Theme = 0
 	}
 	if cfg.Color < 0 || cfg.Color >= len(colorSchemes) {
@@ -39,6 +43,9 @@ func loadConfig() appConfig {
 	}
 	if cfg.Mode < 0 || cfg.Mode > 1 {
 		cfg.Mode = 0
+	}
+	if cfg.HistoryLimit <= 0 {
+		cfg.HistoryLimit = 500
 	}
 
 	return cfg
