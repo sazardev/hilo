@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -170,6 +171,73 @@ func TestResponseScrollKeys(t *testing.T) {
 	m = press(m, "G")
 	if m.responseScroll == 0 {
 		t.Fatal("G should jump to the bottom")
+	}
+}
+
+// End-to-end Git UI: create a collection, generate commits, then exercise the
+// log, diff and branch views against a real go-git repository.
+func TestGitUIFlow(t *testing.T) {
+	const name = "gitflow"
+	SaveCollection(NewCollection(name, ""))
+	if _, err := InitCollectionRepo(name); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+	repo, err := OpenCollectionRepo(name)
+	if err != nil {
+		t.Fatalf("open repo: %v", err)
+	}
+
+	req := NewRequest("list users", "GET", "https://api.example.com/users")
+	req.Collection = name
+	if err := repo.SaveRequest(req, CommitAdd); err != nil {
+		t.Fatalf("commit add: %v", err)
+	}
+	req.URL = "https://api.example.com/users?page=2"
+	if err := repo.SaveRequest(req, CommitUpdate); err != nil {
+		t.Fatalf("commit update: %v", err)
+	}
+
+	m := newModel()
+	m.collections, _ = ListCollections()
+	for i, c := range m.collections {
+		if c.Name == name {
+			m.collIdx = i
+		}
+	}
+	m.activeTab = tabCollections
+	m.collMode = collDetail
+	m.loadCollectionReqs()
+	m.collReqIdx = 0
+
+	m.openGitLog()
+	if m.collMode != collGitLog {
+		t.Fatalf("openGitLog did not switch mode: %d", m.collMode)
+	}
+	if len(m.gitLog) < 3 { // init + add + update
+		t.Fatalf("expected >=3 commits, got %d", len(m.gitLog))
+	}
+	if m.gitReqPath == "" {
+		t.Fatal("git diff target not set from selected request")
+	}
+
+	// Diff the oldest commit against HEAD — should be a non-empty addition.
+	m.gitLogIdx = len(m.gitLog) - 1
+	m.showGitDiff()
+	if m.collMode != collGitDiff || strings.TrimSpace(m.gitDiff) == "" {
+		t.Fatalf("diff not produced (mode=%d, len=%d)", m.collMode, len(m.gitDiff))
+	}
+
+	// Revert the request file to the first commit that introduced it.
+	m.gitLogIdx = len(m.gitLog) - 2
+	m.revertToCommit()
+	if !strings.Contains(m.message, "reverted") {
+		t.Fatalf("revert message unexpected: %q", m.message)
+	}
+
+	// Branch view lists at least the default branch.
+	m.openGitBranches()
+	if m.collMode != collGitBranch || len(m.gitBranches) == 0 {
+		t.Fatalf("branches not listed (mode=%d, n=%d)", m.collMode, len(m.gitBranches))
 	}
 }
 
