@@ -242,27 +242,20 @@ func (cr *CollectionRepo) Diff(filePath, fromHash, toHash string) (string, error
 
 	var oldContent, newContent string
 
+	// A missing file at a given revision is not an error: it means the request
+	// was added or deleted, which the diff represents as empty-on-one-side.
 	if fromHash != "" {
-		oldContent, err = getFileContent(fromHash, filePath)
-		if err != nil {
-			return "", fmt.Errorf("read old file: %w", err)
-		}
+		oldContent, _ = getFileContent(fromHash, filePath)
 	}
 
 	if toHash != "" {
-		newContent, err = getFileContent(toHash, filePath)
-		if err != nil {
-			return "", fmt.Errorf("read new file: %w", err)
-		}
+		newContent, _ = getFileContent(toHash, filePath)
 	} else {
 		head, err := repo.Head()
 		if err != nil {
 			return "", fmt.Errorf("get HEAD: %w", err)
 		}
-		newContent, err = getFileContent(head.Hash().String(), filePath)
-		if err != nil {
-			return "", fmt.Errorf("read HEAD file: %w", err)
-		}
+		newContent, _ = getFileContent(head.Hash().String(), filePath)
 	}
 
 	return buildUnifiedDiff(filePath, oldContent, newContent), nil
