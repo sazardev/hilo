@@ -274,7 +274,22 @@ func newModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick)
+	// No continuous ticking at startup — the UI only redraws in response to
+	// input or in-flight requests, keeping it idle-quiet.
+	return nil
+}
+
+// responseLineCount is the number of lines in the current response view mode.
+func (m model) responseLineCount() int {
+	return len(m.responseLines())
+}
+
+// responsePageSize estimates the visible response height for page scrolling.
+func (m model) responsePageSize() int {
+	if m.layoutMode() == layoutWide {
+		return max(m.height-10, 5)
+	}
+	return max(m.height/2-6, 4)
 }
 
 func (m *model) blurAll() {
