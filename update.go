@@ -173,6 +173,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.importMode {
 		return m.handleImportKey(msg)
 	}
+	switch m.overlay {
+	case overlayCurl:
+		return m.handleCurlOverlayKey(msg)
+	case overlaySnippet:
+		return m.handleSnippetOverlayKey(msg)
+	}
 	if m.searchMode {
 		return m.handleSearchKey(msg)
 	}
@@ -338,6 +344,39 @@ func (m model) handleRequestKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+y":
 		return m.copyCurl()
+
+	case "ctrl+i":
+		m.overlay = overlayCurl
+		m.pasteArea.SetValue("")
+		m.pasteArea.Focus()
+		return m, nil
+
+	case "ctrl+p":
+		m.overlay = overlaySnippet
+		m.snippetLang = 0
+		return m, nil
+
+	case "ctrl+o":
+		path, err := ExportRequestFile(m.currentRequest())
+		if err != nil {
+			m.message = "export failed"
+		} else {
+			m.message = "saved " + path
+		}
+		m.messageTime = timeNow()
+		return m, nil
+
+	case "s":
+		if m.focusArea == focusResponse && m.response != nil {
+			path, err := SaveResponseToFile(m.response)
+			if err != nil {
+				m.message = "save failed"
+			} else {
+				m.message = "saved " + path
+			}
+			m.messageTime = timeNow()
+			return m, nil
+		}
 
 	case "ctrl+k":
 		m.response = nil
@@ -752,6 +791,61 @@ func (m model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleCurlOverlayKey drives the "paste a curl command" import overlay.
+func (m model) handleCurlOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.overlay = overlayNone
+		m.pasteArea.Blur()
+		return m, nil
+	case "ctrl+s":
+		input := strings.TrimSpace(m.pasteArea.Value())
+		m.overlay = overlayNone
+		m.pasteArea.Blur()
+		if input == "" {
+			return m, nil
+		}
+		req, err := ParseCurl(input)
+		if err != nil {
+			m.message = "curl parse failed: " + err.Error()
+		} else {
+			m.loadRequestIntoEditor(req)
+			m.message = "imported from cURL"
+		}
+		m.messageTime = timeNow()
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.pasteArea, cmd = m.pasteArea.Update(msg)
+		return m, cmd
+	}
+}
+
+// handleSnippetOverlayKey drives the multi-language code snippet viewer.
+func (m model) handleSnippetOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+p":
+		m.overlay = overlayNone
+		return m, nil
+	case "left", "h":
+		m.snippetLang = (m.snippetLang - 1 + len(snippetLangs)) % len(snippetLangs)
+		return m, nil
+	case "right", "l":
+		m.snippetLang = (m.snippetLang + 1) % len(snippetLangs)
+		return m, nil
+	case "y":
+		code := GenerateSnippet(m.currentRequest(), m.resolveEnv(), m.snippetLang)
+		if err := clipboard.WriteAll(code); err != nil {
+			m.message = "clipboard unavailable"
+		} else {
+			m.message = snippetLangs[m.snippetLang] + " snippet copied"
+		}
+		m.messageTime = timeNow()
+		return m, nil
+	}
+	return m, nil
+}
+
 // jumpSearch advances the response scroll to the next/previous search match.
 func (m model) jumpSearch(forward bool) (tea.Model, tea.Cmd) {
 	n := len(m.searchMatches)
@@ -838,42 +932,27 @@ func (m model) handleTableEditorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		m.authType--
-		if m.authType < authNone {
-			m.authType = authOAuth2
-		}
+		m.authType = (m.authType - 1 + authTypeIdx(len(authTypeNames))) % authTypeIdx(len(authTypeNames))
+		m.authFieldIdx = 0
 		m.focusCurrent()
 		return m, nil
 
 	case "down", "j":
-		m.authType++
-		if m.authType > authOAuth2 {
-			m.authType = authNone
-		}
+		m.authType = (m.authType + 1) % authTypeIdx(len(authTypeNames))
+		m.authFieldIdx = 0
 		m.focusCurrent()
 		return m, nil
 	}
 
 	// tab / shift+tab between auth fields are handled upstream in
 	// handleRequestKey via focusNextAuthField / focusPrevAuthField.
-	var cmd tea.Cmd
-	switch m.authType {
-	case authBearer:
-		m.authValue, cmd = m.authValue.Update(msg)
-	case authBasic, authDigest:
-		if m.authPass.Focused() {
-			m.authPass, cmd = m.authPass.Update(msg)
-		} else {
-			m.authUser, cmd = m.authUser.Update(msg)
-		}
-	case authAPIKey:
-		if m.authValue.Focused() {
-			m.authValue, cmd = m.authValue.Update(msg)
-		} else {
-			m.authKey, cmd = m.authKey.Update(msg)
-		}
+	fields := m.authFields()
+	if m.authFieldIdx < len(fields) {
+		var cmd tea.Cmd
+		*fields[m.authFieldIdx], cmd = fields[m.authFieldIdx].Update(msg)
+		return m, cmd
 	}
-	return m, cmd
+	return m, nil
 }
 
 func (m model) handleEditorEnter() (tea.Model, tea.Cmd) {
@@ -942,35 +1021,83 @@ func (m model) handleCollectionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.collImporting {
+		switch msg.String() {
+		case "esc":
+			m.collImporting = false
+			m.pathInput.SetValue("")
+			return m, nil
+		case "enter":
+			m.importPostmanFromPath(m.pathInput.Value())
+			m.collImporting = false
+			m.pathInput.SetValue("")
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.pathInput, cmd = m.pathInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	// Git sub-views handle their own keys.
+	switch m.collMode {
+	case collGitLog:
+		return m.handleGitLogKey(msg)
+	case collGitDiff:
+		return m.handleGitDiffKey(msg)
+	case collGitBranch:
+		return m.handleGitBranchKey(msg)
+	}
+
 	switch msg.String() {
 	case "n":
 		m.creatingMode = true
 		m.creatingName.SetValue("")
 		m.creatingName.Focus()
 		return m, nil
+
+	case "i":
+		m.collImporting = true
+		m.pathInput.SetValue("")
+		m.pathInput.Focus()
+		return m, nil
+
+	case "g":
+		m.openGitLog()
+		return m, nil
+
+	case "b":
+		m.openGitBranches()
+		return m, nil
+
 	case "d", "delete":
-		if len(m.collections) > 0 && m.collIdx < len(m.collections) {
-			name := m.collections[m.collIdx].Name
-			DeleteCollection(name)
-			m.collections, _ = ListCollections()
-			if m.collIdx >= len(m.collections) {
-				m.collIdx = max(0, len(m.collections)-1)
-			}
-			m.collReqs = nil
-			m.message = fmt.Sprintf("deleted collection '%s'", name)
-			m.messageTime = timeNow()
+		if m.collMode == collDetail {
+			m.deleteSelectedRequest()
+		} else {
+			m.deleteSelectedCollection()
 		}
 		return m, nil
+
 	case "up", "k":
-		if m.collIdx > 0 {
+		if m.collMode == collDetail {
+			if m.collReqIdx > 0 {
+				m.collReqIdx--
+			}
+		} else if m.collIdx > 0 {
 			m.collIdx--
 			m.loadCollectionReqs()
 		}
+
 	case "down", "j":
-		if m.collIdx < len(m.collections)-1 {
+		if m.collMode == collDetail {
+			if m.collReqIdx < len(m.collReqs)-1 {
+				m.collReqIdx++
+			}
+		} else if m.collIdx < len(m.collections)-1 {
 			m.collIdx++
 			m.loadCollectionReqs()
 		}
+
 	case "enter":
 		if len(m.collections) > 0 {
 			if m.collMode == collDetail {
@@ -985,6 +1112,7 @@ func (m model) handleCollectionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.loadCollectionReqs()
 			}
 		}
+
 	case "esc":
 		if m.collMode == collDetail {
 			m.collMode = collList
@@ -993,6 +1121,283 @@ func (m model) handleCollectionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focusArea = focusURL
 			m.focusCurrent()
 		}
+	}
+	return m, nil
+}
+
+// importPostmanFromPath reads a Postman v2.1 collection file and materialises
+// it as a hilo collection with a git repo and one commit per request.
+func (m *model) importPostmanFromPath(path string) {
+	path = strings.Trim(strings.TrimSpace(path), "\"'")
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		m.message = "cannot read file"
+		m.messageTime = timeNow()
+		return
+	}
+	col, reqs, err := ImportPostmanCollection(data)
+	if err != nil {
+		m.message = "invalid Postman collection"
+		m.messageTime = timeNow()
+		return
+	}
+
+	_ = SaveCollection(col)
+	if _, err := OpenCollectionRepo(col.Name); err != nil {
+		_, _ = InitCollectionRepo(col.Name)
+	}
+	repo, _ := OpenCollectionRepo(col.Name)
+	for _, r := range reqs {
+		if repo != nil {
+			_ = repo.SaveRequest(r, CommitAdd)
+		} else {
+			_ = SaveRequest(r)
+		}
+	}
+
+	m.collections, _ = ListCollections()
+	for i, c := range m.collections {
+		if c.Name == col.Name {
+			m.collIdx = i
+		}
+	}
+	m.message = fmt.Sprintf("imported %d request(s) into '%s'", len(reqs), col.Name)
+	m.messageTime = timeNow()
+}
+
+func (m *model) deleteSelectedCollection() {
+	if len(m.collections) == 0 || m.collIdx >= len(m.collections) {
+		return
+	}
+	name := m.collections[m.collIdx].Name
+	DeleteCollection(name)
+	m.collections, _ = ListCollections()
+	if m.collIdx >= len(m.collections) {
+		m.collIdx = max(0, len(m.collections)-1)
+	}
+	m.collReqs = nil
+	m.message = fmt.Sprintf("deleted collection '%s'", name)
+	m.messageTime = timeNow()
+}
+
+func (m *model) deleteSelectedRequest() {
+	if m.collReqIdx >= len(m.collReqs) || m.collIdx >= len(m.collections) {
+		return
+	}
+	req := m.collReqs[m.collReqIdx]
+	col := m.collections[m.collIdx]
+
+	if repo, err := OpenCollectionRepo(col.Name); err == nil {
+		_ = repo.DeleteRequest(col.Name, req.ID, req.Name)
+	} else {
+		_ = DeleteRequest(col.Name, req.ID)
+	}
+
+	// Drop the id from the collection's ordered list and persist.
+	kept := col.Requests[:0]
+	for _, id := range col.Requests {
+		if id != req.ID {
+			kept = append(kept, id)
+		}
+	}
+	col.Requests = kept
+	_ = SaveCollection(col)
+	m.collections[m.collIdx] = col
+
+	m.loadCollectionReqs()
+	if m.collReqIdx >= len(m.collReqs) {
+		m.collReqIdx = max(0, len(m.collReqs)-1)
+	}
+	m.message = fmt.Sprintf("deleted request '%s'", req.Name)
+	m.messageTime = timeNow()
+}
+
+// --- Git versioning views ---
+
+func (m *model) openGitLog() {
+	repo, ok := m.currentRepo()
+	if !ok {
+		m.message = "no git repo for this collection"
+		m.messageTime = timeNow()
+		return
+	}
+	log, err := repo.Log(100)
+	if err != nil || len(log) == 0 {
+		m.message = "no commit history yet"
+		m.messageTime = timeNow()
+		return
+	}
+	m.gitLog = log
+	m.gitLogIdx = 0
+
+	// If a request is selected, target it for diff/revert.
+	m.gitReqPath, m.gitReqName = "", ""
+	if m.collMode == collDetail && m.collReqIdx < len(m.collReqs) {
+		req := m.collReqs[m.collReqIdx]
+		m.gitReqPath = gitRepoPath(req.ID)
+		m.gitReqName = req.Name
+	}
+	m.collMode = collGitLog
+}
+
+func (m model) handleGitLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.collMode = collDetail
+		return m, nil
+	case "up", "k":
+		if m.gitLogIdx > 0 {
+			m.gitLogIdx--
+		}
+		return m, nil
+	case "down", "j":
+		if m.gitLogIdx < len(m.gitLog)-1 {
+			m.gitLogIdx++
+		}
+		return m, nil
+	case "enter", "d":
+		m.showGitDiff()
+		return m, nil
+	case "r":
+		m.revertToCommit()
+		return m, nil
+	case "b":
+		m.openGitBranches()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *model) showGitDiff() {
+	if m.gitReqPath == "" {
+		m.message = "open a collection and pick a request to diff"
+		m.messageTime = timeNow()
+		return
+	}
+	repo, ok := m.currentRepo()
+	if !ok || m.gitLogIdx >= len(m.gitLog) {
+		return
+	}
+	diff, err := repo.Diff(m.gitReqPath, m.gitLog[m.gitLogIdx].Hash, "")
+	if err != nil {
+		m.message = "diff unavailable"
+		m.messageTime = timeNow()
+		return
+	}
+	if strings.TrimSpace(diff) == "" {
+		m.message = "no changes vs current version"
+		m.messageTime = timeNow()
+		return
+	}
+	m.gitDiff = diff
+	m.gitDiffScroll = 0
+	m.collMode = collGitDiff
+}
+
+func (m *model) revertToCommit() {
+	if m.gitReqPath == "" {
+		m.message = "pick a request to revert"
+		m.messageTime = timeNow()
+		return
+	}
+	repo, ok := m.currentRepo()
+	if !ok || m.gitLogIdx >= len(m.gitLog) {
+		return
+	}
+	hash := m.gitLog[m.gitLogIdx]
+	if err := repo.Checkout(m.gitReqPath, hash.Hash); err != nil {
+		m.message = "revert failed"
+	} else {
+		m.loadCollectionReqs()
+		m.message = fmt.Sprintf("reverted %s to %s", m.gitReqName, hash.ShortHash)
+	}
+	m.messageTime = timeNow()
+}
+
+func (m model) handleGitDiffKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.collMode = collGitLog
+		return m, nil
+	case "up", "k":
+		if m.gitDiffScroll > 0 {
+			m.gitDiffScroll--
+		}
+		return m, nil
+	case "down", "j":
+		m.gitDiffScroll++
+		return m, nil
+	case "pgup":
+		m.gitDiffScroll = max(0, m.gitDiffScroll-10)
+		return m, nil
+	case "pgdown":
+		m.gitDiffScroll += 10
+		return m, nil
+	case "g", "home":
+		m.gitDiffScroll = 0
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *model) openGitBranches() {
+	repo, ok := m.currentRepo()
+	if !ok {
+		m.message = "no git repo for this collection"
+		m.messageTime = timeNow()
+		return
+	}
+	branches, err := repo.Branches()
+	if err != nil || len(branches) == 0 {
+		m.message = "no branches found"
+		m.messageTime = timeNow()
+		return
+	}
+	cur, _ := repo.CurrentBranch()
+	m.gitBranches = branches
+	m.gitCurBranch = cur
+	m.gitBranchIdx = 0
+	for i, b := range branches {
+		if b == cur {
+			m.gitBranchIdx = i
+		}
+	}
+	m.collMode = collGitBranch
+}
+
+func (m model) handleGitBranchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.collMode = collDetail
+		return m, nil
+	case "up", "k":
+		if m.gitBranchIdx > 0 {
+			m.gitBranchIdx--
+		}
+		return m, nil
+	case "down", "j":
+		if m.gitBranchIdx < len(m.gitBranches)-1 {
+			m.gitBranchIdx++
+		}
+		return m, nil
+	case "enter":
+		if m.gitBranchIdx < len(m.gitBranches) {
+			name := m.gitBranches[m.gitBranchIdx]
+			if repo, ok := m.currentRepo(); ok {
+				if err := repo.CheckoutBranch(name); err != nil {
+					m.message = "checkout failed"
+				} else {
+					m.gitCurBranch = name
+					m.loadCollectionReqs()
+					m.message = "switched to branch " + name
+				}
+				m.messageTime = timeNow()
+			}
+		}
+		return m, nil
 	}
 	return m, nil
 }
