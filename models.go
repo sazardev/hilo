@@ -60,6 +60,12 @@ type Auth struct {
 	Value    string `json:"value,omitempty"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
+
+	// OAuth2 client-credentials flow.
+	TokenURL     string `json:"token_url,omitempty"`
+	ClientID     string `json:"client_id,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"`
+	Scope        string `json:"scope,omitempty"`
 }
 
 // Response represents the result of an executed HTTP request.
