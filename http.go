@@ -123,7 +123,9 @@ func buildHTTPRequest(req Request, env map[string]string) (*http.Request, error)
 
 	// Apply auth
 	if req.Auth != nil && req.Auth.Type != AuthNone {
-		applyAuth(httpReq, req.Auth, env)
+		if err := applyAuth(httpReq, req.Auth, env); err != nil {
+			return nil, err
+		}
 	}
 
 	return httpReq, nil
@@ -159,8 +161,9 @@ func buildHTTPClient(cfg HTTPClientConfig) *http.Client {
 	return client
 }
 
-// applyAuth sets the appropriate authorization header or query param.
-func applyAuth(req *http.Request, auth *Auth, env map[string]string) {
+// applyAuth sets the appropriate authorization header or query param. It only
+// returns an error for flows that perform I/O (OAuth2 token retrieval).
+func applyAuth(req *http.Request, auth *Auth, env map[string]string) error {
 	switch auth.Type {
 	case AuthBearer:
 		token := ResolveVars(auth.Value, env)
@@ -174,8 +177,7 @@ func applyAuth(req *http.Request, auth *Auth, env map[string]string) {
 	case AuthAPIKey:
 		key := ResolveVars(auth.Key, env)
 		value := ResolveVars(auth.Value, env)
-		// If key looks like a header name (contains no URL special chars), use header
-		// Otherwise treat as query param
+		// If key looks like a header name, use header; otherwise query param.
 		if strings.Contains(key, "X-") || strings.Contains(key, "Authorization") || strings.Contains(key, "Api") {
 			req.Header.Set(key, value)
 		} else {
@@ -185,12 +187,56 @@ func applyAuth(req *http.Request, auth *Auth, env map[string]string) {
 		}
 
 	case AuthDigest:
-		// Digest auth requires challenge-response; use basic for now
-		// Full digest implementation would require a round-trip to get the nonce
+		// Digest requires a challenge-response round trip; basic is a reasonable
+		// fallback for the common case where the server also accepts it.
 		user := ResolveVars(auth.Username, env)
 		pass := ResolveVars(auth.Password, env)
 		req.SetBasicAuth(user, pass)
+
+	case AuthOAuth2:
+		token, err := fetchOAuth2Token(auth, env)
+		if err != nil {
+			return fmt.Errorf("oauth2: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	return nil
+}
+
+// fetchOAuth2Token performs the client-credentials grant and returns the
+// access token.
+func fetchOAuth2Token(auth *Auth, env map[string]string) (string, error) {
+	tokenURL := ResolveVars(auth.TokenURL, env)
+	if tokenURL == "" {
+		return "", fmt.Errorf("missing token URL")
+	}
+
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", ResolveVars(auth.ClientID, env))
+	form.Set("client_secret", ResolveVars(auth.ClientSecret, env))
+	if scope := ResolveVars(auth.Scope, env); scope != "" {
+		form.Set("scope", scope)
+	}
+
+	resp, err := http.PostForm(tokenURL, form)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+	}
+
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &tok); err != nil || tok.AccessToken == "" {
+		return "", fmt.Errorf("no access_token in token response")
+	}
+	return tok.AccessToken, nil
 }
 
 // bodyContentType returns the appropriate Content-Type header for a body type.
