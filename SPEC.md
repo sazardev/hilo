@@ -297,16 +297,17 @@ update(collection): rename "My API" to "Production API"
 ## 7. Importación / Exportación
 
 ### 7.1 Importar
+- **cURL** — Pegar comando cURL y parsear a request ✅ (`Ctrl+I`)
+- **Postman Collection** — Importar `collection.json` de Postman ✅ (`i` en Collections)
 - **OpenAPI (Swagger)** — Escanear spec y crear colección con todos los endpoints (Futuro v2)
-- **cURL** — Pegar comando cURL y parsear a request
-- **Postman Collection** — Importar `collection.json` de Postman
-- **HTTPie Session** — Importar desde HTTPie
+- **HTTPie Session** — Importar desde HTTPie (Futuro)
 
 ### 7.2 Exportar
-- **cURL** — Copiar como comando cURL
+- **cURL** — Copiar como comando cURL ✅ (`Ctrl+Y`)
+- **Code Snippets** — Generar Python/JavaScript/Go ✅ (`Ctrl+P`)
+- **Raw Request** — Exportar como archivo `.hilo.json` ✅ (`Ctrl+O`)
+- **Response** — Guardar respuesta como archivo ✅ (`s` en Response)
 - **OpenAPI** — Exportar colección como spec OpenAPI (Futuro)
-- **Raw Request** — Exportar como archivo `.hilo.json`
-- **Response** — Guardar respuesta como archivo
 
 ---
 
@@ -361,6 +362,16 @@ update(collection): rename "My API" to "Production API"
 | `/` | Response | Buscar en respuesta |
 | `n` / `N` | Response | Siguiente/anterior match de búsqueda |
 | `a` / `Space` | Environments | Activar/desactivar entorno seleccionado |
+| `Ctrl+I` | Request | Importar pegando un comando cURL |
+| `Ctrl+P` | Request | Ver/copiar snippets de código (cURL/Python/JS/Go) |
+| `Ctrl+O` | Request | Exportar petición como `.hilo.json` |
+| `s` | Response | Guardar cuerpo de respuesta a archivo |
+| `g` | Collections | Ver historial git (log) de la colección |
+| `b` | Collections | Selector de ramas git |
+| `i` | Collections | Importar colección Postman (ruta a `collection.json`) |
+| `d` / `Enter` | Git Log | Ver diff del request entre el commit y la versión actual |
+| `r` | Git Log | Revertir el request al commit seleccionado |
+| `↑↓` / `PgUp` / `PgDn` | Git Diff | Desplazar el diff |
 | `?` | Any | Ayuda contextual |
 | `q` | Any (sin editar) | Salir |
 | `1`-`6` | Any (sin editar) | Ir directamente al tab N |
