@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -19,7 +20,59 @@ func (m model) View() string {
 	if m.importMode {
 		return m.viewImport()
 	}
+	switch m.overlay {
+	case overlayCurl:
+		return m.viewCurlOverlay()
+	case overlaySnippet:
+		return m.viewSnippetOverlay()
+	}
 	return m.viewMain()
+}
+
+func (m model) viewCurlOverlay() string {
+	s := m.styles
+	title := s.title.Render("Import from cURL")
+	hint := s.muted.Render("paste a curl command, then ") + s.footerKey.Render("ctrl+s") +
+		s.muted.Render(" to import · ") + s.footerKey.Render("esc") + s.muted.Render(" to cancel")
+
+	m.pasteArea.SetWidth(m.width - 6)
+	m.pasteArea.SetHeight(max(m.height-7, 3))
+	box := s.panelFocus.Width(m.width - 4).Render(m.pasteArea.View())
+
+	return lipgloss.NewStyle().Padding(1, 1).Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, hint, box),
+	)
+}
+
+func (m model) viewSnippetOverlay() string {
+	s := m.styles
+
+	var tabs []string
+	for i, l := range snippetLangs {
+		if i == m.snippetLang {
+			tabs = append(tabs, s.subTabActive.Render(" "+l+" "))
+		} else {
+			tabs = append(tabs, s.subTabInactive.Render(" "+l+" "))
+		}
+	}
+	bar := strings.Join(tabs, s.muted.Render("│"))
+	header := s.title.Render("Code snippet") + "   " + bar
+	hint := s.muted.Render("←/→ language · ") + s.footerKey.Render("y") + s.muted.Render(" copy · ") +
+		s.footerKey.Render("esc") + s.muted.Render(" close")
+
+	code := GenerateSnippet(m.currentRequest(), m.resolveEnv(), m.snippetLang)
+	innerW := m.width - 6
+	innerH := max(m.height-7, 3)
+
+	var lines []string
+	for _, ln := range strings.Split(code, "\n") {
+		lines = append(lines, clipLine(ln, innerW))
+	}
+	body := s.panel.Width(m.width - 4).Height(innerH).Render(s.body.Render(clipHeight(strings.Join(lines, "\n"), innerH)))
+
+	return lipgloss.NewStyle().Padding(1, 1).Render(
+		lipgloss.JoinVertical(lipgloss.Left, header, hint, body),
+	)
 }
 
 func (m model) viewMain() string {
@@ -129,7 +182,7 @@ func (m model) contextHints() string {
 	case tabRequest:
 		switch m.focusArea {
 		case focusURL:
-			parts = []string{m.hint("↑↓", "method"), m.hint("ctrl+s", "send"), m.hint("tab", "next"), m.hint("h/l", "tabs")}
+			parts = []string{m.hint("ctrl+s", "send"), m.hint("ctrl+i", "import curl"), m.hint("ctrl+p", "code"), m.hint("tab", "next"), m.hint("h/l", "tabs")}
 		case focusActions:
 			parts = []string{m.hint("←→", "choose"), m.hint("↵", "run"), m.hint("tab", "next")}
 		case focusSubTabs:
@@ -137,10 +190,21 @@ func (m model) contextHints() string {
 		case focusEditor:
 			parts = []string{m.hint("tab", "field"), m.hint("↵", "add row"), m.hint("ctrl+e", "section"), m.hint("esc", "back")}
 		case focusResponse:
-			parts = []string{m.hint("↑↓", "scroll"), m.hint("←→", "view"), m.hint("/", "search"), m.hint("y", "copy"), m.hint("ctrl+k", "clear")}
+			parts = []string{m.hint("↑↓", "scroll"), m.hint("←→", "view"), m.hint("/", "search"), m.hint("y", "copy"), m.hint("s", "save")}
 		}
 	case tabCollections:
-		parts = []string{m.hint("n", "new"), m.hint("↵", "open/load"), m.hint("d", "del"), m.hint("h/l", "tabs")}
+		switch m.collMode {
+		case collGitLog:
+			parts = []string{m.hint("↑↓", "nav"), m.hint("d/↵", "diff"), m.hint("r", "revert"), m.hint("b", "branch"), m.hint("esc", "back")}
+		case collGitDiff:
+			parts = []string{m.hint("↑↓", "scroll"), m.hint("pgup/pgdn", "page"), m.hint("esc", "back")}
+		case collGitBranch:
+			parts = []string{m.hint("↑↓", "nav"), m.hint("↵", "switch"), m.hint("esc", "back")}
+		case collDetail:
+			parts = []string{m.hint("↵", "load"), m.hint("g", "git log"), m.hint("b", "branches"), m.hint("d", "del"), m.hint("esc", "back")}
+		default:
+			parts = []string{m.hint("n", "new"), m.hint("i", "import"), m.hint("↵", "open"), m.hint("d", "del"), m.hint("h/l", "tabs")}
+		}
 	case tabHistory:
 		parts = []string{m.hint("↵", "reuse"), m.hint("d", "del"), m.hint("h/l", "tabs")}
 	case tabEnvironments:
@@ -168,7 +232,7 @@ func (m model) renderBody(w, h int) string {
 	innerW, innerH := w-4, h-3
 	switch m.activeTab {
 	case tabCollections:
-		title, content = "Collections", m.viewCollections(innerW, innerH)
+		title, content = m.collectionsTitle(), m.viewCollections(innerW, innerH)
 	case tabHistory:
 		title, content = "History", m.viewHistory(innerW, innerH)
 	case tabEnvironments:
@@ -393,22 +457,35 @@ func (m model) renderTableEditor(kvs []keyValue, w, h int) string {
 
 func (m model) renderAuthEditor(w, h int) string {
 	s := m.styles
-	title := s.accent.Render(authTypeNames[m.authType]) + s.muted.Render("   ↑/↓ change type")
+	title := s.accent.Render(authTypeNames[m.authType]) + s.muted.Render("   ↑/↓ type · tab field")
+
+	// field renders a labelled input with a focus marker on the active field.
+	idx := 0
+	field := func(label string, in textinput.Model) string {
+		marker := "  "
+		if m.focusArea == focusEditor && idx == m.authFieldIdx {
+			marker = s.accent.Render("▸ ")
+		}
+		idx++
+		return marker + s.muted.Render(padRight(label, 14)) + in.View()
+	}
 
 	var fields []string
 	switch m.authType {
 	case authBearer:
-		fields = append(fields, "  Token  "+m.authValue.View())
+		fields = append(fields, field("Token", m.authValue))
 	case authBasic, authDigest:
-		fields = append(fields, "  User   "+m.authUser.View())
-		fields = append(fields, "  Pass   "+m.authPass.View())
+		fields = append(fields, field("Username", m.authUser), field("Password", m.authPass))
 	case authAPIKey:
-		fields = append(fields, "  Key    "+m.authKey.View())
-		fields = append(fields, "  Value  "+m.authValue.View())
+		fields = append(fields, field("Key", m.authKey), field("Value", m.authValue))
 	case authOAuth2:
-		fields = append(fields, "  "+s.muted.Render("OAuth2 client-credentials — set token endpoint in Body"))
+		fields = append(fields,
+			field("Token URL", m.authKey),
+			field("Client ID", m.authUser),
+			field("Client Secret", m.authPass),
+			field("Scope", m.authValue))
 	default:
-		fields = append(fields, "  "+s.muted.Render("no authentication"))
+		fields = append(fields, "  "+s.muted.Render("no authentication for this request"))
 	}
 	return title + "\n\n" + strings.Join(fields, "\n")
 }
@@ -540,9 +617,42 @@ func (m model) renderRespModes() string {
 // Collections / History / Environments / Config / Help
 // ---------------------------------------------------------------------------
 
+func (m model) collectionsTitle() string {
+	name := ""
+	if m.collIdx < len(m.collections) {
+		name = m.collections[m.collIdx].Name
+	}
+	switch m.collMode {
+	case collGitLog:
+		return "Git Log · " + name
+	case collGitDiff:
+		return "Diff · " + m.gitReqName
+	case collGitBranch:
+		return "Branches · " + name
+	case collDetail:
+		return "Collection · " + name
+	default:
+		return "Collections"
+	}
+}
+
 func (m model) viewCollections(w, h int) string {
 	s := m.styles
 
+	switch m.collMode {
+	case collGitLog:
+		return m.viewGitLog(w, h)
+	case collGitDiff:
+		return m.viewGitDiff(w, h)
+	case collGitBranch:
+		return m.viewGitBranch(w, h)
+	}
+
+	if m.collImporting {
+		return s.muted.Render("import Postman collection — path to collection.json:") +
+			"\n\n  " + s.accent.Render(m.pathInput.View()) +
+			"\n\n" + s.muted.Render("enter to import · esc to cancel")
+	}
 	if m.creatingMode {
 		return s.muted.Render("new collection name:") + "\n\n  " + s.accent.Render(m.creatingName.View()+"█") +
 			"\n\n" + s.muted.Render("enter to create · esc to cancel")
@@ -580,6 +690,87 @@ func (m model) viewCollections(w, h int) string {
 		}
 	}
 	return clipHeight(out, h)
+}
+
+func (m model) viewGitLog(w, h int) string {
+	s := m.styles
+	if len(m.gitLog) == 0 {
+		return s.muted.Render("no commits")
+	}
+
+	var head string
+	if m.gitReqName != "" {
+		head = s.muted.Render("target: ") + s.body.Render(m.gitReqName)
+	} else {
+		head = s.muted.Render("repo history — open a request to enable diff/revert")
+	}
+
+	maxRows := max(h-2, 1)
+	start := 0
+	if m.gitLogIdx >= maxRows {
+		start = m.gitLogIdx - maxRows + 1
+	}
+	end := min(start+maxRows, len(m.gitLog))
+
+	var rows []string
+	for i := start; i < end; i++ {
+		c := m.gitLog[i]
+		marker := "  "
+		if i == m.gitLogIdx {
+			marker = s.accent.Render("▸ ")
+		}
+		when := s.muted.Render(relativeTime(c.When))
+		msg := clipLine(firstLine(c.Message), max(w-22, 8))
+		rows = append(rows, marker+s.statusWarn.Render(c.ShortHash)+"  "+s.body.Render(msg)+"  "+when)
+	}
+	return clipHeight(head+"\n\n"+strings.Join(rows, "\n"), h)
+}
+
+func (m model) viewGitDiff(w, h int) string {
+	s := m.styles
+	lines := strings.Split(m.gitDiff, "\n")
+	total := len(lines)
+
+	bodyH := max(h-1, 1)
+	scroll := m.gitDiffScroll
+	if scroll > total-bodyH {
+		scroll = total - bodyH
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	end := min(scroll+bodyH, total)
+
+	var out []string
+	for i := scroll; i < end; i++ {
+		out = append(out, colorDiffLine(lines[i], w, s))
+	}
+
+	info := ""
+	if total > bodyH {
+		info = s.muted.Render(fmt.Sprintf("%d–%d / %d   (esc back)", scroll+1, end, total))
+	}
+	return clipHeight(strings.Join(out, "\n")+"\n"+info, h)
+}
+
+func (m model) viewGitBranch(w, h int) string {
+	s := m.styles
+	if len(m.gitBranches) == 0 {
+		return s.muted.Render("no branches")
+	}
+	rows := []string{s.muted.Render("enter to switch · esc back"), ""}
+	for i, b := range m.gitBranches {
+		marker := "  "
+		if i == m.gitBranchIdx {
+			marker = s.accent.Render("▸ ")
+		}
+		cur := ""
+		if b == m.gitCurBranch {
+			cur = " " + s.envBadge.Render("current")
+		}
+		rows = append(rows, marker+s.body.Render(b)+cur)
+	}
+	return clipHeight(strings.Join(rows, "\n"), h)
 }
 
 func (m model) viewHistory(w, h int) string {
@@ -811,12 +1002,11 @@ func (m model) viewHelp(w, h int) string {
 		{
 			s.sectionHead.Render("request"),
 			row("  ctrl+s", "send request"),
-			row("  ↑/↓", "change method (URL)"),
-			row("  ctrl+e", "cycle sections"),
-			row("  ctrl+b", "cycle body type"),
-			row("  ctrl+n", "new request"),
-			row("  ctrl+d", "duplicate request"),
-			row("  ctrl+y", "copy as cURL"),
+			row("  ctrl+e/b", "section / body type"),
+			row("  ctrl+n/d", "new / duplicate"),
+			row("  ctrl+i", "import from cURL"),
+			row("  ctrl+p", "code snippets"),
+			row("  ctrl+y/o", "copy curl / export"),
 		},
 		{
 			s.sectionHead.Render("response"),
@@ -824,11 +1014,12 @@ func (m model) viewHelp(w, h int) string {
 			row("  pgup/pgdn", "scroll page"),
 			row("  g / G", "top / bottom"),
 			row("  / · n/N", "search · matches"),
-			row("  y", "copy body"),
-			row("  ctrl+k", "clear response"),
+			row("  y / s", "copy / save to file"),
 			"",
-			s.sectionHead.Render("collections / envs"),
-			row("  n/d · a", "new/del · activate"),
+			s.sectionHead.Render("collections / git"),
+			row("  n/i · a", "new/import · activate"),
+			row("  g · b", "git log · branches"),
+			row("  d · r", "diff · revert (in log)"),
 		},
 	}
 
@@ -865,6 +1056,31 @@ func padRight(s string, w int) string {
 		return ansi.Truncate(s, w, "")
 	}
 	return s + strings.Repeat(" ", w-width)
+}
+
+// firstLine returns the first non-empty line of a (possibly multi-line) string.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// colorDiffLine styles a unified-diff line by its leading marker.
+func colorDiffLine(line string, w int, s *styles) string {
+	clipped := clipLine(line, w)
+	switch {
+	case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		return s.muted.Bold(true).Render(clipped)
+	case strings.HasPrefix(line, "@@"):
+		return s.accent.Render(clipped)
+	case strings.HasPrefix(line, "+"):
+		return s.statusOK.Render(clipped)
+	case strings.HasPrefix(line, "-"):
+		return s.statusErr.Render(clipped)
+	default:
+		return s.body.Render(clipped)
+	}
 }
 
 // clipLine truncates a (possibly styled) line to w display columns, ANSI-aware.
