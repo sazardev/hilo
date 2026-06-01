@@ -106,3 +106,81 @@ func TestEnvActivationResolves(t *testing.T) {
 		t.Fatalf("resolveEnv did not return active env values: %v", env)
 	}
 }
+
+// Tab walks the request in visual order: URL → Actions → Sections → Editor.
+func TestRequestFocusOrder(t *testing.T) {
+	m := newModel()
+	want := []focusArea{focusActions, focusSubTabs, focusEditor}
+	for i, w := range want {
+		m = press(m, "tab")
+		if m.focusArea != w {
+			t.Fatalf("after %d tabs focus=%d, want %d", i+1, m.focusArea, w)
+		}
+	}
+}
+
+// Inside the editor, Tab steps key→value→next field, then leaves to Response.
+func TestEditorTabTraversal(t *testing.T) {
+	m := newModel()
+	m = press(m, "tab", "tab", "tab") // url → actions → subtabs → editor
+	if m.focusArea != focusEditor || m.editorCol != 0 {
+		t.Fatalf("not at editor key cell: area=%d col=%d", m.focusArea, m.editorCol)
+	}
+	m = press(m, "tab")
+	if m.focusArea != focusEditor || m.editorCol != 1 {
+		t.Fatalf("tab should move to value cell: area=%d col=%d", m.focusArea, m.editorCol)
+	}
+	m = press(m, "tab")
+	if m.focusArea != focusResponse {
+		t.Fatalf("tab past last field should reach response, got %d", m.focusArea)
+	}
+}
+
+// Arrow keys switch the editor section when the selector row is focused.
+func TestSubTabSwitchWithArrows(t *testing.T) {
+	m := newModel()
+	m = press(m, "tab", "tab") // → subtabs
+	if m.focusArea != focusSubTabs {
+		t.Fatalf("expected focusSubTabs, got %d", m.focusArea)
+	}
+	start := m.subTab
+	m = press(m, "right")
+	if m.subTab == start {
+		t.Fatal("right arrow did not switch editor section")
+	}
+}
+
+// Response scrolling is clamped and g/G jump to the bounds.
+func TestResponseScrollKeys(t *testing.T) {
+	m := newModel()
+	m.response = sampleResponse()
+	m.focusArea = focusResponse
+	m.width, m.height = 100, 30
+
+	for i := 0; i < 1000; i++ {
+		m.scrollResponse(1)
+	}
+	if m.responseScroll > m.responseLineCount()-1 {
+		t.Fatalf("scroll %d exceeded line count %d", m.responseScroll, m.responseLineCount())
+	}
+	m = press(m, "g")
+	if m.responseScroll != 0 {
+		t.Fatalf("g should jump to top, got %d", m.responseScroll)
+	}
+	m = press(m, "G")
+	if m.responseScroll == 0 {
+		t.Fatal("G should jump to the bottom")
+	}
+}
+
+// The mouse wheel scrolls the response body.
+func TestMouseWheelScrollsResponse(t *testing.T) {
+	m := newModel()
+	m.response = sampleResponse()
+	m.activeTab = tabRequest
+	next, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	m = next.(model)
+	if m.responseScroll == 0 {
+		t.Fatal("wheel down did not scroll the response")
+	}
+}
