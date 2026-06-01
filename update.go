@@ -219,31 +219,29 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		idx := int(k[0] - '1')
 		if idx < len(tabNames) {
 			m.switchTab(tab(idx))
 		}
 		return m, nil
 
-	case "left", "h":
-		if m.activeTab != tabHelp {
-			t := m.activeTab - 1
-			if t < 0 {
-				t = tab(len(tabNames) - 1)
-			}
-			m.switchTab(t)
+	// h/l switch tabs (vim-style). Arrows are reserved for in-panel navigation
+	// so the Request tab can use ←/→ for sections, actions and response modes.
+	case "h":
+		t := m.activeTab - 1
+		if t < 0 {
+			t = tab(len(tabNames) - 1)
 		}
+		m.switchTab(t)
 		return m, nil
 
-	case "right", "l":
-		if m.activeTab != tabHelp {
-			t := m.activeTab + 1
-			if int(t) >= len(tabNames) {
-				t = 0
-			}
-			m.switchTab(t)
+	case "l":
+		t := m.activeTab + 1
+		if int(t) >= len(tabNames) {
+			t = 0
 		}
+		m.switchTab(t)
 		return m, nil
 
 	case "?":
@@ -290,7 +288,9 @@ func (m model) handleRequestKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+s":
 		if !m.sending && m.urlInput.Value() != "" {
 			m.sending = true
-			return m, m.sendRequest()
+			m.focusArea = focusResponse
+			m.focusCurrent()
+			return m, tea.Batch(m.sendRequest(), m.spinner.Tick)
 		}
 		return m, nil
 
@@ -640,7 +640,9 @@ func (m model) runAction() (tea.Model, tea.Cmd) {
 	case 0:
 		if !m.sending && m.urlInput.Value() != "" {
 			m.sending = true
-			return m, m.sendRequest()
+			m.focusArea = focusResponse
+			m.focusCurrent()
+			return m, tea.Batch(m.sendRequest(), m.spinner.Tick)
 		}
 		return m, nil
 	case 1:
