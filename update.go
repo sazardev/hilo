@@ -13,6 +13,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+const messageTTL = 4 * time.Second
+
+// clearMessageMsg fires after a status message's lifetime; it carries the
+// timestamp so a newer message isn't cleared by an older timer.
+type clearMessageMsg struct{ at time.Time }
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -21,7 +27,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		prevAt := m.messageTime
+		next, cmd := m.handleKey(msg)
+		// When a handler set a fresh status message, schedule its expiry.
+		if nm, ok := next.(model); ok && nm.message != "" && !nm.messageTime.Equal(prevAt) {
+			at := nm.messageTime
+			expire := tea.Tick(messageTTL, func(time.Time) tea.Msg { return clearMessageMsg{at: at} })
+			cmd = tea.Batch(cmd, expire)
+		}
+		return next, cmd
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
+
+	case clearMessageMsg:
+		if m.messageTime.Equal(msg.at) {
+			m.message = ""
+		}
+		return m, nil
 
 	case responseMsg:
 		m.response = &msg.response
@@ -33,19 +56,117 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.searchMatches = nil
 		m.focusArea = focusResponse
 		m.focusCurrent()
+		m.message = m.responseSummary(msg.response)
+		m.messageTime = timeNow()
 
 		// Persist every executed request to history and prune to the limit.
 		entry := HistoryEntry{Request: msg.request, Response: msg.response}
 		_ = SaveHistoryEntry(entry)
 		PruneHistory(m.config.HistoryLimit)
 		m.history, _ = ListHistory()
-		return m, nil
+
+		at := m.messageTime
+		return m, tea.Tick(messageTTL, func(time.Time) tea.Msg { return clearMessageMsg{at: at} })
 
 	default:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
+		// The spinner only animates while a request is in flight, so the UI
+		// stays completely idle (no redraws) the rest of the time.
+		if m.sending {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 	}
+}
+
+// handleMouse maps the scroll wheel to the active tab's primary scroll region.
+func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.scrollBy(-1)
+	case tea.MouseButtonWheelDown:
+		m.scrollBy(1)
+	}
+	return m, nil
+}
+
+func (m *model) scrollBy(notch int) {
+	switch m.activeTab {
+	case tabRequest:
+		if m.response != nil {
+			m.scrollResponse(notch * 3)
+		}
+	case tabHistory:
+		m.moveSelection(&m.histIdx, len(m.history), notch)
+	case tabCollections:
+		m.moveSelection(&m.collIdx, len(m.collections), notch)
+		m.loadCollectionReqs()
+	case tabEnvironments:
+		m.moveSelection(&m.envIdx, len(m.envs), notch)
+	case tabConfig:
+		m.configCursor += notch
+		if m.configCursor < 0 {
+			m.configCursor = 0
+		}
+		if mx := m.configMax(); m.configCursor > mx {
+			m.configCursor = mx
+		}
+	}
+}
+
+func (m *model) moveSelection(idx *int, n, delta int) {
+	if n == 0 {
+		return
+	}
+	*idx += delta
+	if *idx < 0 {
+		*idx = 0
+	}
+	if *idx > n-1 {
+		*idx = n - 1
+	}
+}
+
+// responseSummary builds the one-line status shown after a request completes.
+func (m model) responseSummary(r Response) string {
+	if r.Error != "" {
+		return "request failed: " + r.Error
+	}
+	return fmt.Sprintf("%d %s · %dms · %s", r.StatusCode,
+		strings.TrimSpace(strings.TrimPrefix(r.StatusText, fmt.Sprintf("%d", r.StatusCode))),
+		r.Duration.Milliseconds(), FormatBodySize(r.BodySize))
+}
+
+// scrollResponse moves the response viewport, clamped to the body bounds.
+func (m *model) scrollResponse(delta int) {
+	m.responseScroll += delta
+	maxScroll := max(0, m.responseLineCount()-1)
+	if m.responseScroll > maxScroll {
+		m.responseScroll = maxScroll
+	}
+	if m.responseScroll < 0 {
+		m.responseScroll = 0
+	}
+}
+
+// cycleSubTab moves the editor section selector and resets the cell cursor.
+func (m *model) cycleSubTab(dir int) {
+	n := subTab(len(subTabNames))
+	m.subTab = (m.subTab + subTab(dir) + n) % n
+	m.editorRow, m.editorCol = 0, 0
+}
+
+// copyResponseBody copies the current response view (pretty/raw/headers) to the
+// system clipboard.
+func (m model) copyResponseBody() (tea.Model, tea.Cmd) {
+	if err := clipboard.WriteAll(m.responseContent()); err != nil {
+		m.message = "clipboard unavailable"
+	} else {
+		m.message = "response copied to clipboard"
+	}
+	m.messageTime = timeNow()
+	return m, nil
 }
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
